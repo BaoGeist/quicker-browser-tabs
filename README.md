@@ -21,6 +21,8 @@ pip install -r requirements.txt
 uvicorn main:app --host 127.0.0.1 --port 8765
 ```
 
+**Run at Windows login:** `powershell -ExecutionPolicy Bypass -File server\install-windows-startup.ps1` copies the server to `%LOCALAPPDATA%\FastBrowserTabs\server`, creates a venv there, and adds a hidden launcher to the Startup folder (logs in `server.log` next to `main.py`). Re-run it after changing `main.py`.
+
 | Method | Path | Body | Purpose |
 |--------|------|------|---------|
 | POST | `/sync` | `{"tabs": [Tab, ...]}` | Replace the whole tab set |
