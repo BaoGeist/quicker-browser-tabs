@@ -1,1 +1,1 @@
-flowlauncher
+# No third-party dependencies; the plugin speaks JSON-RPC v2 directly.

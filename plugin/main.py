@@ -1,14 +1,18 @@
+"""Fast Browser Tabs: Flow Launcher plugin (JSON-RPC v2, "Language": "Python_v2").
+
+Flow starts this process once and keeps it running, exchanging newline-delimited
+JSON-RPC 2.0 messages over stdin/stdout. Anything written to stderr is shown as a
+plugin error, and a crashed process is not restarted, so every handler is guarded.
+"""
+
 import json
 import os
 import sys
 import urllib.parse
 import urllib.request
 
-# Flow Launcher plugins ship their dependencies in ./lib (pip install -r requirements.txt -t lib).
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [PLUGIN_DIR, os.path.join(PLUGIN_DIR, "lib")]
-
-from flowlauncher import FlowLauncher  # noqa: E402
+sys.path.insert(0, PLUGIN_DIR)
 
 from focus import focus_browser_window  # noqa: E402
 
@@ -33,42 +37,85 @@ def _post(path, payload):
         return json.load(resp)
 
 
-class FastBrowserTabs(FlowLauncher):
-    def query(self, param):
-        try:
-            tabs = _get("/search?q=" + urllib.parse.quote(param.strip()))
-        except OSError:
-            # With a global (*) keyword this runs on every search, so only
-            # show the warning when the keyword is typed on its own.
-            if param.strip():
-                return []
-            return [{
-                "Title": "Local tab server not running on port 8765",
-                "SubTitle": "Start it with: uvicorn main:app --port 8765",
-                "IcoPath": ICON,
-            }]
+def query(q, settings=None):
+    search = q.get("search", "")
+    try:
+        tabs = _get("/search?q=" + urllib.parse.quote(search.strip()))
+    except OSError:
+        # Under the global (*) keyword this runs on every search; stay quiet there.
+        if q.get("actionKeyword", "*") == "*":
+            return {"result": []}
+        return {"result": [{
+            "title": "Local tab server not running on port 8765",
+            "subTitle": "Start it with: uvicorn main:app --port 8765",
+            "icoPath": ICON,
+        }]}
 
-        return [
-            {
-                "Title": tab.get("title") or tab.get("url", ""),
-                "SubTitle": tab.get("url", ""),
-                "IcoPath": ICON,
-                "JsonRPCAction": {
-                    "method": "activate_tab",
-                    "parameters": [tab["tabId"], tab["windowId"], tab.get("title", "")],
-                },
-            }
-            for tab in tabs
-        ]
+    return {"result": [
+        {
+            "title": tab.get("title") or tab.get("url", ""),
+            "subTitle": tab.get("url", ""),
+            "icoPath": ICON,
+            "jsonRPCAction": {
+                "method": "activate_tab",
+                "parameters": [tab["tabId"], tab["windowId"], tab.get("title", "")],
+            },
+        }
+        for tab in tabs
+    ]}
 
-    def activate_tab(self, tabId, windowId, title=""):
+
+def activate_tab(tab_id, window_id, title=""):
+    try:
+        _post("/activate", {"tabId": tab_id, "windowId": window_id})
+    except OSError:
+        return {"hide": True}
+    # Chrome can't raise its own window past Windows' foreground lock.
+    focus_browser_window(title)
+    return {"hide": True}
+
+
+HANDLERS = {
+    "initialize": lambda context: {},
+    "query": query,
+    "activate_tab": activate_tab,
+}
+
+
+def _send(out, message):
+    out.write(json.dumps(message).encode() + b"\n")
+    out.flush()
+
+
+def main():
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    # Stray warnings on stderr would surface as plugin errors.
+    sys.stderr = open(os.devnull, "w")
+
+    for line in stdin:
         try:
-            _post("/activate", {"tabId": tabId, "windowId": windowId})
-        except OSError:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if "id" not in message:
+            continue  # notifications, e.g. $/cancelRequest
+        method = message.get("method")
+        if method == "close":
+            _send(stdout, {"jsonrpc": "2.0", "id": message["id"], "result": None})
             return
-        # Chrome can't raise its own window past Windows' foreground lock.
-        focus_browser_window(title)
+
+        handler = HANDLERS.get(method)
+        if handler is None:
+            error = {"code": -32601, "message": f"Method not found: {method}"}
+            _send(stdout, {"jsonrpc": "2.0", "id": message["id"], "error": error})
+            continue
+        try:
+            result = handler(*message.get("params", []))
+            _send(stdout, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+        except Exception as exc:
+            error = {"code": -32603, "message": repr(exc)}
+            _send(stdout, {"jsonrpc": "2.0", "id": message["id"], "error": error})
 
 
 if __name__ == "__main__":
-    FastBrowserTabs()
+    main()

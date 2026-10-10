@@ -43,13 +43,11 @@ curl -X POST localhost:8765/remove -H 'Content-Type: application/json' -d '{"tab
 
 ## Plugin
 
-Copy `plugin/` into Flow Launcher's plugins folder (`%APPDATA%\FlowLauncher\Plugins\FastBrowserTabs`) and vendor its dependency:
+Uses Flow Launcher's JSON-RPC v2 protocol (`"Language": "Python_v2"`): Flow starts `main.py` once and keeps it running, sending newline-delimited JSON-RPC over stdin/stdout. That avoids a ~90 ms Python startup per keystroke; queries take a few ms. No third-party dependencies.
 
-```sh
-pip install -r requirements.txt -t lib
-```
+Copy `plugin/` into Flow Launcher's plugins folder (`%APPDATA%\FlowLauncher\Plugins\FastBrowserTabs`) and restart Flow Launcher, then type `tabs <query>` (or set the action keyword to `* t` for global results). Selecting a result calls `POST /activate` and raises the browser window. If the server is unreachable, the plugin shows a "Local tab server not running on port 8765" result when invoked by keyword, and nothing in global search.
 
-Restart Flow Launcher, then type `tabs <query>`. Selecting a result calls `POST /activate`. If the server is not reachable within 400 ms, the plugin shows a single "Local tab server not running on port 8765" result.
+Note: Flow doesn't restart the plugin process if it crashes, and treats any stderr output as an error, so handlers are guarded and stderr is silenced.
 
 ## Extension
 

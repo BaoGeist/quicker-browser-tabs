@@ -5,7 +5,7 @@
   "Description": "Search and switch browser tabs from a local cache server",
   "Author": "BaoGeist",
   "Version": "0.1.0",
-  "Language": "python",
+  "Language": "Python_v2",
   "Website": "https://github.com/BaoGeist/quicker-browser-tabs",
   "ExecuteFileName": "main.py",
   "IcoPath": "Images/app.png"
