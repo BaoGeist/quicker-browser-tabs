@@ -36,6 +36,10 @@ class FastBrowserTabs(FlowLauncher):
         try:
             tabs = _get("/search?q=" + urllib.parse.quote(param.strip()))
         except OSError:
+            # With a global (*) keyword this runs on every search, so only
+            # show the warning when the keyword is typed on its own.
+            if param.strip():
+                return []
             return [{
                 "Title": "Local tab server not running on port 8765",
                 "SubTitle": "Start it with: uvicorn main:app --port 8765",
