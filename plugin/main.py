@@ -10,6 +10,8 @@ sys.path[:0] = [PLUGIN_DIR, os.path.join(PLUGIN_DIR, "lib")]
 
 from flowlauncher import FlowLauncher  # noqa: E402
 
+from focus import focus_browser_window  # noqa: E402
+
 SERVER = "http://127.0.0.1:8765"
 TIMEOUT = 0.4  # seconds
 ICON = "Images/app.png"
@@ -53,17 +55,19 @@ class FastBrowserTabs(FlowLauncher):
                 "IcoPath": ICON,
                 "JsonRPCAction": {
                     "method": "activate_tab",
-                    "parameters": [tab["tabId"], tab["windowId"]],
+                    "parameters": [tab["tabId"], tab["windowId"], tab.get("title", "")],
                 },
             }
             for tab in tabs
         ]
 
-    def activate_tab(self, tabId, windowId):
+    def activate_tab(self, tabId, windowId, title=""):
         try:
             _post("/activate", {"tabId": tabId, "windowId": windowId})
         except OSError:
-            pass
+            return
+        # Chrome can't raise its own window past Windows' foreground lock.
+        focus_browser_window(title)
 
 
 if __name__ == "__main__":
