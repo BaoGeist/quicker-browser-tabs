@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Fast Browser Tabs",
+  "version": "0.1.0",
+  "description": "Pushes open tabs to the local Fast Browser Tabs server for Flow Launcher.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
