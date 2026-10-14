@@ -28,6 +28,9 @@ class Tab(BaseModel):
 
 class SyncRequest(BaseModel):
     client: str = ""
+    browser: str = ""  # e.g. "Chrome", "Edge"
+    label: str = ""  # user-set profile name from the extension's options page
+    focusedWindowId: Optional[int] = None
     tabs: list[Tab]
 
 
@@ -41,10 +44,20 @@ class TabRef(BaseModel):
     windowId: int
 
 
+class FocusRequest(BaseModel):
+    client: str = ""
+    windowId: int
+
+
 # Each browser/profile numbers its tabs and windows independently, so tabs are
 # keyed by the extension's client id too.
 # (client, windowId, tabId) -> (tab as dict, lowercased "title\nurl" haystack for search)
 _tabs: dict[tuple[str, int, int], tuple[dict, str]] = {}
+# client -> {"browser": ..., "label": ...}, from its latest /sync.
+_client_info: dict[str, dict] = {}
+# (client, windowId) -> monotonic time the window was last focused; search lists
+# tabs from recently focused windows first.
+_focused_at: dict[tuple[str, int], float] = {}
 # Connected browser extensions, by client id.
 _clients: dict[str, WebSocket] = {}
 # Activations made while no extension was connected: (monotonic time, event).
@@ -61,6 +74,9 @@ def _put(tab: Tab) -> None:
 def sync(req: SyncRequest):
     # Replace only this client's tabs; other browsers keep theirs.
     _drop_client_tabs(req.client)
+    _client_info[req.client] = {"browser": req.browser, "label": req.label}
+    if req.focusedWindowId is not None:
+        _focused_at[(req.client, req.focusedWindowId)] = time.monotonic()
     for tab in req.tabs:
         _put(tab.model_copy(update={"client": req.client}))
     log.info("sync %r: %d tabs (%d total)", req.client, len(req.tabs), len(_tabs))
@@ -70,6 +86,19 @@ def sync(req: SyncRequest):
 def _drop_client_tabs(client: str) -> None:
     for key in [k for k in _tabs if k[0] == client]:
         del _tabs[key]
+
+
+def _forget_client(client: str) -> None:
+    _drop_client_tabs(client)
+    _client_info.pop(client, None)
+    for key in [k for k in _focused_at if k[0] == client]:
+        del _focused_at[key]
+
+
+@app.post("/focus")
+def focus(req: FocusRequest):
+    _focused_at[(req.client, req.windowId)] = time.monotonic()
+    return {"ok": True}
 
 
 @app.post("/update")
@@ -88,9 +117,32 @@ def remove(ref: TabRef):
 def search(q: str = ""):
     # Every whitespace-separated term must appear in the title or url.
     terms = q.lower().split()
-    if not terms:
-        return [data for data, _ in _tabs.values()]
-    return [data for data, hay in _tabs.values() if all(t in hay for t in terms)]
+    matches = [data for data, hay in _tabs.values() if all(t in hay for t in terms)]
+    matches.sort(key=lambda d: -_focused_at.get((d["client"], d["windowId"]), 0.0))
+    locations = _locations()
+    return [{**d, "location": locations[(d["client"], d["windowId"])]} for d in matches]
+
+
+def _locations() -> dict[tuple[str, int], str]:
+    """Label each (client, window), e.g. "Edge · Work · Window 2".
+
+    The browser/profile part appears only when several clients are connected, and
+    the window number only when that client has several windows. Windows are
+    numbered by age: Chrome's window ids increase over a session.
+    """
+    windows: dict[str, list[int]] = {}
+    for client, window_id, _ in _tabs:
+        ids = windows.setdefault(client, [])
+        if window_id not in ids:
+            ids.append(window_id)
+    labels = {}
+    for client, ids in windows.items():
+        info = _client_info.get(client, {})
+        source = [info.get("browser"), info.get("label")] if len(windows) > 1 else []
+        for n, window_id in enumerate(sorted(ids), 1):
+            parts = source + ([f"Window {n}"] if len(ids) > 1 else [])
+            labels[(client, window_id)] = " · ".join(p for p in parts if p)
+    return labels
 
 
 @app.post("/activate")
@@ -148,5 +200,5 @@ async def ws_endpoint(ws: WebSocket, client: str = ""):
         if _clients.get(client) is ws:
             del _clients[client]
             # Browser closed (or worker died); it does a full sync when it reconnects.
-            _drop_client_tabs(client)
+            _forget_client(client)
         log.info("extension %r disconnected (%d total)", client, len(_clients))

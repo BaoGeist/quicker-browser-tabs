@@ -54,7 +54,7 @@ def query(q, settings=None):
     return {"result": [
         {
             "title": tab.get("title") or tab.get("url", ""),
-            "subTitle": tab.get("url", ""),
+            "subTitle": " — ".join(p for p in (tab.get("location"), tab.get("url", "")) if p),
             "icoPath": ICON,
             "jsonRPCAction": {
                 "method": "activate_tab",

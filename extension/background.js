@@ -45,9 +45,30 @@ async function post(path, body) {
   }
 }
 
+function detectBrowser() {
+  if (navigator.brave) return "Brave";
+  const brands = (navigator.userAgentData?.brands || []).map((b) => b.brand);
+  const known = { "Microsoft Edge": "Edge", Opera: "Opera", Brave: "Brave", "Google Chrome": "Chrome" };
+  for (const [brand, name] of Object.entries(known)) {
+    if (brands.includes(brand)) return name;
+  }
+  return "Chromium";
+}
+
 async function fullSync() {
-  const [client, tabs] = await Promise.all([getClientId(), chrome.tabs.query({})]);
-  await post("/sync", { client, tabs: tabs.map((tab) => toPayload(tab, client)) });
+  const [client, tabs, { label = "" }, focused] = await Promise.all([
+    getClientId(),
+    chrome.tabs.query({}),
+    chrome.storage.local.get("label"),
+    chrome.windows.getLastFocused().catch(() => null),
+  ]);
+  await post("/sync", {
+    client,
+    browser: detectBrowser(),
+    label,
+    focusedWindowId: focused?.id ?? null,
+    tabs: tabs.map((tab) => toPayload(tab, client)),
+  });
 }
 
 async function postTab(tab) {
@@ -116,6 +137,16 @@ chrome.tabs.onAttached.addListener(async (tabId) => postTab(await chrome.tabs.ge
 
 // Prerendered/discarded tabs can swap ids.
 chrome.tabs.onReplaced.addListener(() => fullSync());
+
+// Lets the server list tabs from the most recently used window first.
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
+    post("/focus", { client: await getClientId(), windowId });
+  }
+});
+
+// The profile label is sent with /sync, so resend when it changes in the options page.
+chrome.storage.onChanged.addListener((changes, area) => area === "local" && "label" in changes && fullSync());
 
 // --- Lifecycle ---
 

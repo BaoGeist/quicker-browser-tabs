@@ -25,10 +25,11 @@ uvicorn main:app --host 127.0.0.1 --port 8765
 
 | Method | Path | Body | Purpose |
 |--------|------|------|---------|
-| POST | `/sync` | `{"client": "...", "tabs": [Tab, ...]}` | Replace that client's tabs (other clients' tabs are kept) |
+| POST | `/sync` | `{"client": "...", "browser": "Edge", "label": "Work", "focusedWindowId": 1, "tabs": [Tab, ...]}` | Replace that client's tabs (other clients' tabs are kept) |
 | POST | `/update` | `{"tab": Tab}` | Upsert one tab |
 | POST | `/remove` | `{"client": "...", "tabId": 101, "windowId": 1}` | Remove a closed tab |
-| GET | `/search?q=...` | | Tabs whose title/url contain every term in `q` (case-insensitive); all tabs if `q` is empty |
+| POST | `/focus` | `{"client": "...", "windowId": 1}` | Record that a window was focused |
+| GET | `/search?q=...` | | Tabs whose title/url contain every term in `q` (case-insensitive); all tabs if `q` is empty. Most recently focused windows first; each tab gets a `location` label such as `Edge · Work · Window 2` |
 | POST | `/activate` | `{"client": "...", "tabId": 101, "windowId": 1}` | Push an activation to the owning extension (held for 5s if it isn't connected) |
 | WS | `/ws?client=...` | | Push channel to the extension; only `chrome-extension://` / `moz-extension://` origins accepted. A client's tabs are dropped when it disconnects |
 
@@ -54,6 +55,8 @@ Note: Flow doesn't restart the plugin process if it crashes, and treats any stde
 Open `chrome://extensions` (or `edge://extensions`), enable Developer mode, click **Load unpacked**, and pick `extension/`. Requires Chrome 116+.
 
 Load it in every browser or profile you want searchable (Chrome profiles, Edge, Brave, ...). Each install generates a random client id, stored in `chrome.storage.local`, so tab ids from different browsers don't collide and activations go only to the browser that owns the tab.
+
+Result subtitles show where a tab lives, e.g. `Edge · Work · Window 2 — https://...`. The browser is detected automatically; Chrome doesn't expose profile names to extensions, so set one under the extension's **Details → Extension options**. The browser/profile part appears only when several browsers are connected, and windows are numbered by age only when there are several.
 
 - Sends tab creates/navigations/closes to the server, and does a full `/sync` whenever it (re)connects, since the server's store is in-memory only.
 - Holds a WebSocket to `/ws` and pings every 20s, which keeps the MV3 service worker alive. A 30s alarm reconnects it if Chrome suspends the worker anyway.
