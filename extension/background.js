@@ -5,10 +5,26 @@ const WS_URL = "ws://127.0.0.1:8765/ws";
 const PING_MS = 20_000; // < 30s so the open WebSocket keeps this service worker alive
 
 let ws = null;
+let connecting = false; // getClientId() is async, so guard against overlapping connects
 let pingTimer = null;
 
-function toPayload(tab) {
+// Identifies this browser/profile to the server, since tab and window ids are
+// only unique within one browser. Persisted so it survives worker restarts.
+let clientIdPromise = null;
+function getClientId() {
+  clientIdPromise ??= chrome.storage.local.get("clientId").then(async ({ clientId }) => {
+    if (!clientId) {
+      clientId = crypto.randomUUID();
+      await chrome.storage.local.set({ clientId });
+    }
+    return clientId;
+  });
+  return clientIdPromise;
+}
+
+function toPayload(tab, client) {
   return {
+    client,
     tabId: tab.id,
     windowId: tab.windowId,
     title: tab.title || "",
@@ -30,8 +46,16 @@ async function post(path, body) {
 }
 
 async function fullSync() {
-  const tabs = await chrome.tabs.query({});
-  await post("/sync", { tabs: tabs.map(toPayload) });
+  const [client, tabs] = await Promise.all([getClientId(), chrome.tabs.query({})]);
+  await post("/sync", { client, tabs: tabs.map((tab) => toPayload(tab, client)) });
+}
+
+async function postTab(tab) {
+  await post("/update", { tab: toPayload(tab, await getClientId()) });
+}
+
+async function postRemove(tabId, windowId) {
+  await post("/remove", { client: await getClientId(), tabId, windowId });
 }
 
 async function activate(tabId, windowId) {
@@ -45,10 +69,15 @@ async function activate(tabId, windowId) {
   }
 }
 
-function connect() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+async function connect() {
+  if (connecting || ws) return;
 
-  ws = new WebSocket(WS_URL);
+  connecting = true;
+  try {
+    ws = new WebSocket(`${WS_URL}?client=${encodeURIComponent(await getClientId())}`);
+  } finally {
+    connecting = false;
+  }
 
   ws.onopen = () => {
     // The server keeps tabs only in memory, so resync on every (re)connect.
@@ -71,19 +100,19 @@ function connect() {
 
 // --- Tab events -> server ---
 
-chrome.tabs.onCreated.addListener((tab) => post("/update", { tab: toPayload(tab) }));
+chrome.tabs.onCreated.addListener(postTab);
 
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
   if ("title" in change || "url" in change || "favIconUrl" in change) {
-    post("/update", { tab: toPayload(tab) });
+    postTab(tab);
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId, info) => post("/remove", { tabId, windowId: info.windowId }));
+chrome.tabs.onRemoved.addListener((tabId, info) => postRemove(tabId, info.windowId));
 
 // Moving a tab between windows changes its (windowId, tabId) key.
-chrome.tabs.onDetached.addListener((tabId, info) => post("/remove", { tabId, windowId: info.oldWindowId }));
-chrome.tabs.onAttached.addListener(async (tabId) => post("/update", { tab: toPayload(await chrome.tabs.get(tabId)) }));
+chrome.tabs.onDetached.addListener((tabId, info) => postRemove(tabId, info.oldWindowId));
+chrome.tabs.onAttached.addListener(async (tabId) => postTab(await chrome.tabs.get(tabId)));
 
 // Prerendered/discarded tabs can swap ids.
 chrome.tabs.onReplaced.addListener(() => fullSync());

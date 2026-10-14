@@ -58,7 +58,7 @@ def query(q, settings=None):
             "icoPath": ICON,
             "jsonRPCAction": {
                 "method": "activate_tab",
-                "parameters": [tab["tabId"], tab["windowId"], tab.get("title", "")],
+                "parameters": [tab["tabId"], tab["windowId"], tab.get("title", ""), tab.get("client", "")],
             },
         }
         for tab in tabs
@@ -70,9 +70,9 @@ def activate_tab(*args):
     # (optionally followed by settings), not spread out.
     if args and isinstance(args[0], list):
         args = args[0]
-    tab_id, window_id, title = (list(args) + [""])[:3]
+    tab_id, window_id, title, client = (list(args) + ["", ""])[:4]
     try:
-        _post("/activate", {"tabId": tab_id, "windowId": window_id})
+        _post("/activate", {"client": client, "tabId": tab_id, "windowId": window_id})
     except OSError:
         return {"hide": True}
     # Chrome can't raise its own window past Windows' foreground lock.

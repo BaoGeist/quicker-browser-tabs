@@ -18,6 +18,7 @@ app = FastAPI(title="Fast Browser Tabs cache")
 
 
 class Tab(BaseModel):
+    client: str = ""  # id of the extension install (browser/profile) that owns the tab
     tabId: int
     windowId: int
     title: str = ""
@@ -26,6 +27,7 @@ class Tab(BaseModel):
 
 
 class SyncRequest(BaseModel):
+    client: str = ""
     tabs: list[Tab]
 
 
@@ -34,14 +36,17 @@ class UpdateRequest(BaseModel):
 
 
 class TabRef(BaseModel):
+    client: str = ""
     tabId: int
     windowId: int
 
 
-# (windowId, tabId) -> (tab as dict, lowercased "title\nurl" haystack for search)
-_tabs: dict[tuple[int, int], tuple[dict, str]] = {}
-# Connected browser extensions.
-_clients: set[WebSocket] = set()
+# Each browser/profile numbers its tabs and windows independently, so tabs are
+# keyed by the extension's client id too.
+# (client, windowId, tabId) -> (tab as dict, lowercased "title\nurl" haystack for search)
+_tabs: dict[tuple[str, int, int], tuple[dict, str]] = {}
+# Connected browser extensions, by client id.
+_clients: dict[str, WebSocket] = {}
 # Activations made while no extension was connected: (monotonic time, event).
 _activations: deque[tuple[float, dict]] = deque(maxlen=20)
 ACTIVATION_TTL = 5.0  # seconds; older queued activations are dropped
@@ -49,16 +54,22 @@ ACTIVATION_TTL = 5.0  # seconds; older queued activations are dropped
 
 def _put(tab: Tab) -> None:
     data = tab.model_dump()
-    _tabs[(tab.windowId, tab.tabId)] = (data, f"{tab.title}\n{tab.url}".lower())
+    _tabs[(tab.client, tab.windowId, tab.tabId)] = (data, f"{tab.title}\n{tab.url}".lower())
 
 
 @app.post("/sync")
 def sync(req: SyncRequest):
-    _tabs.clear()
+    # Replace only this client's tabs; other browsers keep theirs.
+    _drop_client_tabs(req.client)
     for tab in req.tabs:
-        _put(tab)
-    log.info("sync: %d tabs", len(_tabs))
-    return {"ok": True, "count": len(_tabs)}
+        _put(tab.model_copy(update={"client": req.client}))
+    log.info("sync %r: %d tabs (%d total)", req.client, len(req.tabs), len(_tabs))
+    return {"ok": True, "count": len(req.tabs)}
+
+
+def _drop_client_tabs(client: str) -> None:
+    for key in [k for k in _tabs if k[0] == client]:
+        del _tabs[key]
 
 
 @app.post("/update")
@@ -69,7 +80,7 @@ def update(req: UpdateRequest):
 
 @app.post("/remove")
 def remove(ref: TabRef):
-    removed = _tabs.pop((ref.windowId, ref.tabId), None) is not None
+    removed = _tabs.pop((ref.client, ref.windowId, ref.tabId), None) is not None
     return {"ok": True, "removed": removed}
 
 
@@ -85,40 +96,47 @@ def search(q: str = ""):
 @app.post("/activate")
 async def activate(ref: TabRef):
     event = {"type": "activate", **ref.model_dump()}
-    log.info("activate: windowId=%d tabId=%d", ref.windowId, ref.tabId)
-    delivered = await _broadcast(event)
+    log.info("activate: client=%r windowId=%d tabId=%d", ref.client, ref.windowId, ref.tabId)
+    delivered = await _send_to(ref.client, event)
     if not delivered:
-        # No extension connected; hold it briefly in case one is reconnecting.
+        # Owning extension not connected; hold it briefly in case it is reconnecting.
         _activations.append((time.monotonic(), event))
     return {"ok": True, "delivered": delivered}
 
 
-async def _broadcast(event: dict) -> int:
-    delivered = 0
-    for ws in list(_clients):
-        try:
-            await ws.send_json(event)
-            delivered += 1
-        except Exception:
-            _clients.discard(ws)
-    return delivered
+async def _send_to(client: str, event: dict) -> bool:
+    ws = _clients.get(client)
+    if ws is None:
+        return False
+    try:
+        await ws.send_json(event)
+        return True
+    except Exception:
+        if _clients.get(client) is ws:
+            del _clients[client]
+        return False
 
 
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
+async def ws_endpoint(ws: WebSocket, client: str = ""):
     """Push channel to the browser extension. Only extension origins may connect."""
     origin = ws.headers.get("origin", "")
     if not origin.startswith(("chrome-extension://", "moz-extension://")):
         await ws.close(code=1008)
         return
     await ws.accept()
-    _clients.add(ws)
-    log.info("extension connected (%d total)", len(_clients))
+    _clients[client] = ws
+    log.info("extension %r connected (%d total)", client, len(_clients))
     try:
-        while _activations:
-            queued_at, event = _activations.popleft()
-            if time.monotonic() - queued_at <= ACTIVATION_TTL:
+        pending = list(_activations)
+        _activations.clear()
+        for queued_at, event in pending:
+            if time.monotonic() - queued_at > ACTIVATION_TTL:
+                continue
+            if event["client"] == client:
                 await ws.send_json(event)
+            else:
+                _activations.append((queued_at, event))
         while True:
             # Extension sends periodic pings to keep its service worker alive.
             if await ws.receive_text() == "ping":
@@ -126,5 +144,9 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        _clients.discard(ws)
-        log.info("extension disconnected (%d total)", len(_clients))
+        # A reconnect may already have replaced this socket; only clean up our own.
+        if _clients.get(client) is ws:
+            del _clients[client]
+            # Browser closed (or worker died); it does a full sync when it reconnects.
+            _drop_client_tabs(client)
+        log.info("extension %r disconnected (%d total)", client, len(_clients))

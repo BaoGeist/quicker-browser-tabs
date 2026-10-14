@@ -25,20 +25,20 @@ uvicorn main:app --host 127.0.0.1 --port 8765
 
 | Method | Path | Body | Purpose |
 |--------|------|------|---------|
-| POST | `/sync` | `{"tabs": [Tab, ...]}` | Replace the whole tab set |
+| POST | `/sync` | `{"client": "...", "tabs": [Tab, ...]}` | Replace that client's tabs (other clients' tabs are kept) |
 | POST | `/update` | `{"tab": Tab}` | Upsert one tab |
-| POST | `/remove` | `{"tabId": 101, "windowId": 1}` | Remove a closed tab |
+| POST | `/remove` | `{"client": "...", "tabId": 101, "windowId": 1}` | Remove a closed tab |
 | GET | `/search?q=...` | | Tabs whose title/url contain every term in `q` (case-insensitive); all tabs if `q` is empty |
-| POST | `/activate` | `{"tabId": 101, "windowId": 1}` | Push an activation to connected extensions (held for 5s if none are connected) |
-| WS | `/ws` | | Push channel to the extension; only `chrome-extension://` / `moz-extension://` origins accepted |
+| POST | `/activate` | `{"client": "...", "tabId": 101, "windowId": 1}` | Push an activation to the owning extension (held for 5s if it isn't connected) |
+| WS | `/ws?client=...` | | Push channel to the extension; only `chrome-extension://` / `moz-extension://` origins accepted. A client's tabs are dropped when it disconnects |
 
-`Tab` = `{"tabId": int, "windowId": int, "title": str, "url": str, "favIconUrl": str | null}`
+`Tab` = `{"client": str, "tabId": int, "windowId": int, "title": str, "url": str, "favIconUrl": str | null}`
 
 ```sh
 curl -X POST localhost:8765/update -H 'Content-Type: application/json' \
-  -d '{"tab":{"tabId":101,"windowId":1,"title":"GitHub - Pull Requests","url":"https://github.com/pulls"}}'
+  -d '{"tab":{"client":"demo","tabId":101,"windowId":1,"title":"GitHub - Pull Requests","url":"https://github.com/pulls"}}'
 curl 'localhost:8765/search?q=github'
-curl -X POST localhost:8765/remove -H 'Content-Type: application/json' -d '{"tabId":101,"windowId":1}'
+curl -X POST localhost:8765/remove -H 'Content-Type: application/json' -d '{"client":"demo","tabId":101,"windowId":1}'
 ```
 
 ## Plugin
@@ -52,6 +52,8 @@ Note: Flow doesn't restart the plugin process if it crashes, and treats any stde
 ## Extension
 
 Open `chrome://extensions` (or `edge://extensions`), enable Developer mode, click **Load unpacked**, and pick `extension/`. Requires Chrome 116+.
+
+Load it in every browser or profile you want searchable (Chrome profiles, Edge, Brave, ...). Each install generates a random client id, stored in `chrome.storage.local`, so tab ids from different browsers don't collide and activations go only to the browser that owns the tab.
 
 - Sends tab creates/navigations/closes to the server, and does a full `/sync` whenever it (re)connects, since the server's store is in-memory only.
 - Holds a WebSocket to `/ws` and pings every 20s, which keeps the MV3 service worker alive. A 30s alarm reconnects it if Chrome suspends the worker anyway.
