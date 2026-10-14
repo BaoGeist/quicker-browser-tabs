@@ -65,7 +65,12 @@ def query(q, settings=None):
     ]}
 
 
-def activate_tab(tab_id, window_id, title=""):
+def activate_tab(*args):
+    # Flow passes the result's "parameters" list as a single argument
+    # (optionally followed by settings), not spread out.
+    if args and isinstance(args[0], list):
+        args = args[0]
+    tab_id, window_id, title = (list(args) + [""])[:3]
     try:
         _post("/activate", {"tabId": tab_id, "windowId": window_id})
     except OSError:
